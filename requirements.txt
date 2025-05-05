@@ -1,0 +1,11 @@
+requests
+beautifulsoup4
+torch
+transformers
+langchain
+langchain-community
+langchain-chroma
+langchain-core
+langchain-huggingface
+sentence-transformers
+scikit-learn
