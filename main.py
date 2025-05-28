@@ -2,128 +2,113 @@ import streamlit as st
 import random
 import requests
 from bs4 import BeautifulSoup
-from langchain.schema import Document
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_chroma import Chroma
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.prompts import PromptTemplate
-from langchain_huggingface import HuggingFacePipeline
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
+
 from transformers import pipeline
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 
-# CACHE FUNCTIONS 
+
+# Load and clean text from webpages
 @st.cache_data(show_spinner=False)
-def fetch_articles(urls):
-    documents = []
+def fetch_web_content(urls):
+    all_text = ""
     for url in urls:
         try:
-            res = requests.get(url)
-            soup = BeautifulSoup(res.text, 'html.parser')
-            for tag in soup(['script', 'style']):
+            response = requests.get(url)
+            soup = BeautifulSoup(response.text, "html.parser")
+            for tag in soup(["script", "style"]):
                 tag.decompose()
-            text = ' '.join(soup.get_text().split())
-            documents.append(Document(page_content=text, metadata={"source": url}))
+            all_text += soup.get_text(separator=" ", strip=True) + "\n"
         except Exception as e:
-            st.warning(f"Error fetching {url}: {e}")
-    return documents
+            st.warning(f"Failed to fetch {url}: {e}")
+    return all_text
+
+
+# Initialize Falcon model using HuggingFace pipeline
 
 @st.cache_resource(show_spinner=True)
-def setup_pipeline():
-    urls = [
-        "https://builtin.com/machine-learning",
-        "https://www.analyticsvidhya.com/blog/category/data-science/",
-        "https://www.ibm.com/topics/machine-learning",
-    ]
-    data = fetch_articles(urls)
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000)
-    docs = splitter.split_documents(data)
-    embedding = HuggingFaceEmbeddings()
-    db = Chroma.from_documents(docs, embedding)
-    retriever = db.as_retriever(search_type="similarity", search_kwargs={"k": 3})
+def load_falcon_model():
+    return pipeline(
+        "text-generation",
+        model="tiiuae/falcon-7b",
+        device=0,
+        max_new_tokens=300
+    )
 
-    model_id = "tiiuae/falcon-7b"
-    pipe = pipeline("text-generation", model=model_id, device=0, max_new_tokens=300)
-    llm = HuggingFacePipeline(pipeline=pipe)
-
-    prompt_template = """
-    Answer the question based on this context:
-    {context}
-
-    Question:
-    {question}
-
-    Answer:
-    """
-    prompt = PromptTemplate(input_variables=["context", "question"], template=prompt_template)
-    llm_chain = prompt | llm | StrOutputParser()
-    rag_chain = {"context": retriever, "question": RunnablePassthrough()} | llm_chain
-
-    return rag_chain
-
-# STREAMLIT UI 
-st.set_page_config(page_title="ML Q&A Evaluator", page_icon="🧠", layout="wide")
-st.markdown("<h1 style='text-align: center; color: #4CAF50;'>🧠 Machine Learning Q&A Evaluator</h1>", unsafe_allow_html=True)
+# ---------------------------
+# Streamlit UI Setup
+# ---------------------------
+st.set_page_config("ML Q&A Evaluator", layout="wide")
+st.title(" Machine Learning Q&A Evaluator")
 
 with st.sidebar:
-    st.header("🎯 App Features")
+    st.header("⚙️ Features")
     st.markdown("""
-    - ✅ Random ML Question Generator  
-    - 💬 RAG-based Answer Generator  
-    - 🧪 User Answer Evaluation  
-    - 🔍 Semantic Similarity Scoring  
+    - Random ML questions  
+    - Falcon-7B AI answer  
+    - User input evaluation  
+    - Semantic similarity scoring
     """)
-    st.info("Built using LangChain, HuggingFace, Falcon-7B")
 
-# QUESTION GENERATION 
-question_bank = [
+questions = [
     "What is supervised learning?",
-    "Explain overfitting in ML.",
-    "What is the role of a data scientist?",
-    "Difference between classification and regression?",
-    "How does a neural network work?"
+    "Define overfitting in machine learning.",
+    "What are neural networks?",
+    "Compare regression and classification.",
+    "Role of a data scientist?"
 ]
 
-if "qid" not in st.session_state:
-    st.session_state.qid = f"Q{random.randint(1000, 9999)}"
-    st.session_state.question = random.choice(question_bank)
+# Choose a random question
+if "question" not in st.session_state:
+    st.session_state.question = random.choice(questions)
+    st.session_state.qid = random.randint(1000, 9999)
 
-st.subheader(f" Question ID: `{st.session_state.qid}`")
-st.markdown(f"<h3 style='color:#FF6F61;'>❓ {st.session_state.question}</h3>", unsafe_allow_html=True)
+st.subheader(f"Question ID: {st.session_state.qid}")
+st.markdown(f"### ? {st.session_state.question}")
 
-# RAG PIPELINE & ANSWER 
-rag_chain = setup_pipeline()
+# Load Falcon model
+falcon = load_falcon_model()
 
-if st.button("Generate Answer"):
-    with st.spinner("Generating context-based answer..."):
-        generated_answer = rag_chain.invoke(st.session_state.question).replace("</s>", "").strip()
-        st.session_state.generated_answer = generated_answer
-        st.success("Answer Generated Successfully! ")
+# ---------------------------
+# Generate AI Answer
+# ---------------------------
+if st.button("Generate Falcon Answer"):
+    with st.spinner("Falcon is thinking..."):
+        context_urls = [
+            "https://builtin.com/machine-learning",
+            "https://www.ibm.com/topics/machine-learning"
+        ]
+        context = fetch_web_content(context_urls)
+        prompt = f"Context:\n{context}\n\nQuestion:\n{st.session_state.question}\n\nAnswer:"
+        result = falcon(prompt)[0]["generated_text"]
+        answer_start = result.find("Answer:") + len("Answer:")
+        st.session_state.ai_answer = result[answer_start:].strip()
+        st.success("Answer generated!")
 
-if "generated_answer" in st.session_state:
-    st.markdown("###  Generated Answer")
-    st.markdown(f"<div style='background-color:#f0f8ff; padding:15px; border-radius:10px;'>{st.session_state.generated_answer}</div>", unsafe_allow_html=True)
+# ---------------------------
+# Display and Compare Answers
+# ---------------------------
+if "ai_answer" in st.session_state:
+    st.markdown("####  Falcon's Answer")
+    st.info(st.session_state.ai_answer)
 
-    st.markdown("### 📝 Your Answer")
-    user_input = st.text_area("Write your answer below ", height=150, placeholder="Type your answer here...")
+    st.markdown("####  Your Answer")
+    user_input = st.text_area("Write your answer here:", height=150)
 
-    if st.button(" Evaluate Answer"):
-        if not user_input.strip():
-            st.warning("Please type an answer to evaluate.")
-        else:
-            with st.spinner("Calculating similarity score..."):
-                model = SentenceTransformer("all-MiniLM-L6-v2")
-                gen_vec = model.encode([st.session_state.generated_answer])
-                user_vec = model.encode([user_input])
-                score = cosine_similarity(gen_vec, user_vec)[0][0] * 100
+    if st.button("Evaluate My Answer"):
+        if user_input.strip():
+            with st.spinner("Comparing answers..."):
+                embedder = SentenceTransformer("all-MiniLM-L6-v2")
+                ai_embedding = embedder.encode([st.session_state.ai_answer])
+                user_embedding = embedder.encode([user_input])
+                score = cosine_similarity(ai_embedding, user_embedding)[0][0] * 100
 
-            st.markdown(f"<h3 style='color:#2196F3;'>Similarity Score: {score:.2f} / 100</h3>", unsafe_allow_html=True)
-
+            st.markdown(f"###  Similarity Score: **{score:.2f} / 100**")
             if score > 80:
-                st.success("Excellent! Your answer closely matches the generated response. 🎉")
+                st.success("Excellent! Your answer is very close.")
             elif score > 50:
-                st.info("Good effort! There is some similarity, but room for improvement.")
+                st.info("Decent effort, but there's room to improve.")
             else:
-                st.warning("Low similarity. Try improving your answer with more specific details.")
+                st.warning("Your answer is quite different. Try revising.")
+        else:
+            st.warning("Please write an answer first.")
